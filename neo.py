@@ -646,12 +646,10 @@ def can_start_attack(user_id):
     return True, "✅ ʀᴇᴀᴅʏ ᴛᴏ sᴛᴀʀᴛ ᴀᴛᴛᴀᴄᴋ"
 
 def get_attack_method(ip):
-    if ip.startswith('91'):
-        return "VC FLOOD", "ɢᴀᴍᴇ"
-    elif ip.startswith(('15', '96')):
+    if ip.startswith(('15', '96')):
         return None, "⚠️ ɪɴᴠᴀʟɪᴅ ɪᴘ - ɪᴘs sᴛᴀʀᴛɪɴɢ ᴡɪᴛʜ '15' ᴏʀ '96' ᴀʀᴇ ɴᴏᴛ ᴀʟʟᴏᴡᴇᴅ"
     else:
-        return "BGMI FLOOD", "ɢᴀᴍᴇ"
+        return "VC FLOOD", "VC FLOOD"
 
 def is_valid_ip(ip):
     return not ip.startswith(('15', '96'))
@@ -1793,7 +1791,7 @@ async def run_attack(update: Update, context: ContextTypes.DEFAULT_TYPE, ip: str
         f"<tg-emoji emoji-id='5330237710655306682'>🚪</tg-emoji> ᴘᴏʀᴛ: <code>{port}</code>\n"
         f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> ᴛɪᴍᴇ: <code>{time_val}s</code>\n"
         f"<tg-emoji emoji-id='5352858062157783478'>🖥️</tg-emoji> sᴇʀᴠᴇʀs: <code>{success_count}</code>\n"
-        f"<tg-emoji emoji-id='5967507030842283316'>⚡</tg-emoji> ᴍᴇᴛʜᴏᴅ: {method_name}\n"
+        f"<tg-emoji emoji-id='5967507030842283316'>⚡</tg-emoji> ᴍᴇᴛʜᴏᴅ: <code>{method_name}</code>\n"
         f"<tg-emoji emoji-id='5375338737028841420'>⏳</tg-emoji> ᴄᴏᴏʟᴅᴏᴡɴ: {COOLDOWN_DURATION}s ᴀғᴛᴇʀ ᴀᴛᴛᴀᴄᴋ\n"
         f"<tg-emoji emoji-id='6314558216768329781'>🎯</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ ᴀᴛᴛᴀᴄᴋs: <code>{remaining_attacks}/{MAX_ATTACKS}</code>"
     )
