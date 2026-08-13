@@ -1920,9 +1920,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             att = item["attack"]
             msg_lines.append(
                 f"<b>Attack #{idx}</b>\n"
-                f"🌐 ᴛᴀʀɢᴇᴛ: <code>{att['ip']}:{att['port']}</code>\n"
-                f"🔄 ᴇʟᴀᴘsᴇᴅ: <code>{item['elapsed']}s</code> | ⏱️ ʀᴇᴍᴀɪɴɪɴɢ: <code>{item['remaining']}s</code>\n"
-                f"⚡ ᴍᴇᴛʜᴏᴅ: <code>{att['method']}</code>"
+                f"<tg-emoji emoji-id='5447410659077661506'>🌐</tg-emoji> ᴛᴀʀɢᴇᴛ: <code>{att['ip']}:{att['port']}</code>\n"
+                f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> ᴇʟᴀᴘsᴇᴅ: <code>{item['elapsed']}s</code> | <tg-emoji emoji-id='6314480001118902592'>⏱️</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ: <code>{item['remaining']}s</code>\n"
+                f"<tg-emoji emoji-id='5967507030842283316'>⚡</tg-emoji> ᴍᴇᴛʜᴏᴅ: <code>{att['method']}</code>"
             )
         message = "\n\n".join(msg_lines)
     elif attack_status["status"] == "cooldown":
@@ -2817,17 +2817,26 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 success_count += 1
             else:
                 fail_count += 1
-                fail_details.append(f"• `{username}`: {err_msg}")
+                # Escape HTML special characters in username and err_msg
+                safe_user = username.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                safe_err = str(err_msg).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                fail_details.append(f"• <b>{safe_user}</b>: <code>{safe_err}</code>")
         
         if os.path.exists(file_path):
             os.remove(file_path)
             
-        res_text = f"✅ Binary upload finished!\nSuccess: {success_count}, Failed: {fail_count}"
+        res_text = (
+            f"<tg-emoji emoji-id='5208748315805499400'>✅</tg-emoji> <b>ʙɪɴᴀʀʏ ᴜᴘʟᴏᴀᴅ ғɪɴɪsʜᴇᴅ!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>sᴜᴄᴄᴇss:</b> <code>{success_count}</code>\n"
+            f"• <b>ғᴀɪʟᴇᴅ:</b> <code>{fail_count}</code>"
+        )
         if fail_details:
-            res_text += "\n\n❌ **Failures:**\n" + "\n".join(fail_details)
-        await progress_msg.edit_text(res_text, parse_mode="Markdown")
+            res_text += "\n\n<tg-emoji emoji-id='5258274739041883702'>❌</tg-emoji> <b>ғᴀɪʟᴜʀᴇs:</b>\n" + "\n".join(fail_details)
+        await progress_msg.edit_text(res_text, parse_mode="HTML")
     except Exception as e:
-        await progress_msg.edit_text(f"❌ Error: {e}")
+        safe_e = str(e).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        await progress_msg.edit_text(f"<tg-emoji emoji-id='5258274739041883702'>❌</tg-emoji> <b>ᴇʀʀᴏʀ:</b> {safe_e}", parse_mode="HTML")
     return ConversationHandler.END
 
 async def cancel_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
