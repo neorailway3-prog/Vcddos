@@ -2799,9 +2799,10 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     repo.update_file(BINARY_FILE_NAME, "Update binary", binary_content, existing.sha, branch="main")
                 except Exception:
                     repo.create_file(BINARY_FILE_NAME, "Upload binary", binary_content, branch="main")
-                results.append((token_data['username'], True))
-            except Exception:
-                results.append((token_data['username'], False))
+                results.append((token_data['username'], True, "OK"))
+            except Exception as ex:
+                logger.error(f"Error uploading binary to {token_data.get('repo')}: {ex}")
+                results.append((token_data['username'], False, str(ex)))
         
         threads = []
         for token_data in github_tokens:
@@ -2810,13 +2811,21 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             t.start()
         for t in threads: t.join()
         
-        for username, succ in results:
-            if succ: success_count += 1
-            else: fail_count += 1
+        fail_details = []
+        for username, succ, err_msg in results:
+            if succ:
+                success_count += 1
+            else:
+                fail_count += 1
+                fail_details.append(f"• `{username}`: {err_msg}")
         
         if os.path.exists(file_path):
             os.remove(file_path)
-        await progress_msg.edit_text(f"✅ Binary upload finished! Success: {success_count}, Failed: {fail_count}")
+            
+        res_text = f"✅ Binary upload finished!\nSuccess: {success_count}, Failed: {fail_count}"
+        if fail_details:
+            res_text += "\n\n❌ **Failures:**\n" + "\n".join(fail_details)
+        await progress_msg.edit_text(res_text, parse_mode="Markdown")
     except Exception as e:
         await progress_msg.edit_text(f"❌ Error: {e}")
     return ConversationHandler.END
