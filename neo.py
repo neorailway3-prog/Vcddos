@@ -344,15 +344,15 @@ def load_attack_state():
     try:
         doc = db["attack_state"].find_one({"_id": "attack_state"})
         if doc:
-            return doc.get("state", {"current_attack": None, "cooldown_until": 0})
+            return doc.get("state", {"active_attacks": [], "cooldown_until": 0})
     except Exception as e:
         logger.error(f"Error loading attack state: {e}")
-    return {"current_attack": None, "cooldown_until": 0}
+    return {"active_attacks": [], "cooldown_until": 0}
 
 def save_attack_state():
     try:
         state = {
-            "current_attack": current_attack,
+            "active_attacks": active_attacks,
             "cooldown_until": cooldown_until
         }
         db["attack_state"].update_one(
@@ -419,6 +419,44 @@ def save_max_attacks(max_attacks):
         )
     except Exception as e:
         logger.error(f"Error saving max attacks: {e}")
+
+def load_blocked_ports():
+    try:
+        doc = db["settings"].find_one({"_id": "blocked_ports"})
+        if doc:
+            return set(doc.get("ports", []))
+    except Exception as e:
+        logger.error(f"Error loading blocked ports: {e}")
+    return set()
+
+def save_blocked_ports(ports_set):
+    try:
+        db["settings"].update_one(
+            {"_id": "blocked_ports"},
+            {"$set": {"ports": list(ports_set)}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Error saving blocked ports: {e}")
+
+def load_max_concurrent_attacks():
+    try:
+        doc = db["settings"].find_one({"_id": "max_concurrent_attacks"})
+        if doc:
+            return doc.get("max_concurrent_attacks", 5)
+    except Exception as e:
+        logger.error(f"Error loading max concurrent attacks: {e}")
+    return 5
+
+def save_max_concurrent_attacks(limit):
+    try:
+        db["settings"].update_one(
+            {"_id": "max_concurrent_attacks"},
+            {"$set": {"max_concurrent_attacks": limit}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Error saving max concurrent attacks: {e}")
 
 def load_keys():
     try:
@@ -504,12 +542,16 @@ MAINTENANCE_MODE = load_maintenance_mode()
 COOLDOWN_DURATION = load_cooldown()
 MAX_ATTACKS = load_max_attacks()
 MAX_ATTACK_DURATION = load_max_time()
+MAX_CONCURRENT_ATTACKS = load_max_concurrent_attacks()
+blocked_ports = load_blocked_ports()
 user_attack_counts = load_user_attack_counts()
 keys_db = load_keys()
 force_join_db = load_force_join()
 
 attack_state = load_attack_state()
-current_attack = attack_state.get("current_attack")
+active_attacks = attack_state.get("active_attacks", [])
+if "current_attack" in attack_state and attack_state["current_attack"] is not None and not active_attacks:
+    active_attacks = [attack_state["current_attack"]]
 cooldown_until = attack_state.get("cooldown_until", 0)
 
 def is_primary_owner(user_id):
@@ -577,7 +619,7 @@ def can_user_attack(user_id):
     return (is_owner(user_id) or is_admin(user_id) or is_reseller(user_id) or is_approved_user(user_id)) and not MAINTENANCE_MODE
 
 def can_start_attack(user_id):
-    global current_attack, cooldown_until
+    global active_attacks, cooldown_until
     
     if MAINTENANCE_MODE:
         return False, "⚠️ **ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ ᴍᴏᴅᴇ**\n━━━━━━━━━━━━━━━━━━━━━━\nʙᴏᴛ ɪs ᴜɴᴅᴇʀ ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ."
@@ -587,10 +629,14 @@ def can_start_attack(user_id):
     if current_count >= MAX_ATTACKS:
         return False, f"⚠️ **ᴍᴀxɪᴍᴜᴍ ᴀᴛᴛᴀᴄᴋ ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ**\n━━━━━━━━━━━━━━━━━━━━━━\nʏᴏᴜ ʜᴀᴠᴇ ᴜsᴇᴅ ᴀʟʟ {MAX_ATTACKS} ᴀᴛᴛᴀᴄᴋ(s). ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ ғᴏʀ ᴍᴏʀᴇ."
     
-    if current_attack is not None:
+    # Check concurrent attacks limit
+    active_attacks = [a for a in active_attacks if time.time() < a.get("estimated_end_time", 0)]
+    save_attack_state()
+
+    if len(active_attacks) >= MAX_CONCURRENT_ATTACKS:
         if not is_owner(user_id):
-            return False, "⚠️ **ᴇʀʀᴏʀ: ᴀᴛᴛᴀᴄᴋ ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ**\n━━━━━━━━━━━━━━━━━━━━━━\nᴘʟᴇᴀsᴇ ᴡᴀɪᴛ ᴜɴᴛɪʟ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴀᴛᴛᴀᴄᴋ ғɪɴɪsʜᴇs."
-    
+            return False, f"⚠️ **sᴇʀᴠᴇʀ BUSY: ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴀᴛᴛᴀᴄᴋs**\n━━━━━━━━━━━━━━━━━━━━━━\nCurrently {len(active_attacks)}/{MAX_CONCURRENT_ATTACKS} attacks running. Please wait for an attack slot to free up."
+
     current_time = time.time()
     if current_time < cooldown_until:
         if not is_owner(user_id):
@@ -611,8 +657,8 @@ def is_valid_ip(ip):
     return not ip.startswith(('15', '96'))
 
 def start_attack(ip, port, time_val, user_id, method):
-    global current_attack
-    current_attack = {
+    global active_attacks
+    attack_obj = {
         "ip": ip,
         "port": port,
         "time": time_val,
@@ -621,40 +667,55 @@ def start_attack(ip, port, time_val, user_id, method):
         "start_time": time.time(),
         "estimated_end_time": time.time() + int(time_val)
     }
+    active_attacks.append(attack_obj)
     save_attack_state()
     
     user_id_str = str(user_id)
     user_attack_counts[user_id_str] = user_attack_counts.get(user_id_str, 0) + 1
     save_user_attack_counts(user_attack_counts)
     track_attack_activity()
+    return attack_obj
 
-def finish_attack():
-    global current_attack, cooldown_until
-    current_attack = None
+def finish_attack(attack_obj=None):
+    global active_attacks, cooldown_until
+    if attack_obj in active_attacks:
+        active_attacks.remove(attack_obj)
+    else:
+        active_attacks = [a for a in active_attacks if time.time() < a.get("estimated_end_time", 0)]
     cooldown_until = time.time() + COOLDOWN_DURATION
     save_attack_state()
 
-def stop_attack():
-    global current_attack, cooldown_until
-    current_attack = None
+def stop_attack(user_id=None):
+    global active_attacks, cooldown_until
+    if user_id:
+        active_attacks = [a for a in active_attacks if a.get("user_id") != user_id]
+    else:
+        active_attacks = []
     cooldown_until = time.time() + COOLDOWN_DURATION
     save_attack_state()
 
 def get_attack_status():
-    global current_attack, cooldown_until
+    global active_attacks, cooldown_until
+    current_time = time.time()
+    active_attacks = [a for a in active_attacks if current_time < a.get("estimated_end_time", 0)]
+    save_attack_state()
     
-    if current_attack is not None:
-        current_time = time.time()
-        elapsed = int(current_time - current_attack['start_time'])
-        remaining = max(0, int(current_attack['estimated_end_time'] - current_time))
+    if active_attacks:
+        running_list = []
+        for att in active_attacks:
+            elapsed = int(current_time - att['start_time'])
+            remaining = max(0, int(att['estimated_end_time'] - current_time))
+            running_list.append({
+                "attack": att,
+                "elapsed": elapsed,
+                "remaining": remaining
+            })
         return {
             "status": "running",
-            "attack": current_attack,
-            "elapsed": elapsed,
-            "remaining": remaining
+            "active_attacks": running_list,
+            "count": len(running_list)
         }
     
-    current_time = time.time()
     if current_time < cooldown_until:
         remaining_cooldown = int(cooldown_until - current_time)
         return {
@@ -916,8 +977,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>/remove &lt;ID&gt;</code> - Remove User Access\n"
             "• <code>/addadmin &lt;ID&gt; &lt;USERNAME&gt;</code> - Add Admin\n"
             "• <code>/removeadmin &lt;ID&gt;</code> - Remove Admin\n"
+            "• <code>/block &lt;PORT&gt;</code> - Block Port (e.g. /block 1000)\n"
+            "• <code>/unblock &lt;PORT&gt;</code> - Unblock Port\n"
+            "• <code>/listblocks</code> - List All Blocked Ports\n"
+            "• <code>/setconcurrent &lt;NUMBER&gt;</code> - Set Concurrent Attack Limit (e.g. 5-6)\n"
             "• <code>/setcooldown &lt;SECONDS&gt;</code> - Set Attack Cooldown\n"
-            "• <code>/setmaxattack &lt;NUMBER&gt;</code> - Set Max Concurrent Attacks\n"
+            "• <code>/setmaxattack &lt;NUMBER&gt;</code> - Set Max Attacks Per User\n"
             "• <code>/userslist</code> - List All Approved Users\n"
             "• <code>/ownerlist</code> - List All Bot Owners\n"
             "• <code>/adminlist</code> - List All Admins\n"
@@ -1676,7 +1741,15 @@ async def run_attack(update: Update, context: ContextTypes.DEFAULT_TYPE, ip: str
         await update.message.reply_text("❌ Time must be a number", reply_markup=get_user_keyboard())
         return
     
-    start_attack(ip, port, time_val, user_id, method)
+    if int(port) in blocked_ports:
+        await update.message.reply_text(
+            f"❌ <b>ɢᴀʟᴀᴛ ᴘᴏʀᴛ ʜᴀɪ</b>\n━━━━━━━━━━━━━━━━━━━━━━\nPort <code>{port}</code> is blocked.",
+            reply_markup=get_user_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+    
+    attack_obj = start_attack(ip, port, time_val, user_id, method)
     progress_msg = await update.message.reply_text(
         f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> <b>sᴛᴀʀᴛɪɴɢ ᴀᴛᴛᴀᴄᴋ...</b>",
         parse_mode="HTML"
@@ -1757,7 +1830,7 @@ async def run_attack(update: Update, context: ContextTypes.DEFAULT_TYPE, ip: str
 
     def monitor_attack_completion():
         time.sleep(attack_duration)
-        finish_attack()
+        finish_attack(attack_obj)
         logger.info(f"Attack completed automatically after {attack_duration} seconds. Cooldown started ({COOLDOWN_DURATION}s).")
     
     monitor_thread = threading.Thread(target=monitor_attack_completion)
@@ -1839,15 +1912,19 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     attack_status = get_attack_status()
     if attack_status["status"] == "running":
-        attack = attack_status["attack"]
-        message = (
-            f"<tg-emoji emoji-id='6311888443622299860'>✔️</tg-emoji> <b>ᴀᴛᴛᴀᴄᴋ ʀᴜɴɴɪɴɢ</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<tg-emoji emoji-id='5447410659077661506'>🌐</tg-emoji> ᴛᴀʀɢᴇᴛ: <code>{attack['ip']}:{attack['port']}</code>\n"
-            f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> ᴇʟᴀᴘsᴇᴅ: <code>{attack_status['elapsed']}s</code>\n"
-            f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ: <code>{attack_status['remaining']}s</code>\n"
-            f"<tg-emoji emoji-id='5967507030842283316'>⚡</tg-emoji> ᴍᴇᴛʜᴏᴅ: <code>{attack['method']}</code>"
-        )
+        running_items = attack_status["active_attacks"]
+        msg_lines = [
+            f"<tg-emoji emoji-id='6311888443622299860'>✔️</tg-emoji> <b>ᴀᴄᴛɪᴠᴇ ᴀᴛᴛᴀᴄᴋs ({attack_status['count']}/{MAX_CONCURRENT_ATTACKS})</b>\n━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+        for idx, item in enumerate(running_items, 1):
+            att = item["attack"]
+            msg_lines.append(
+                f"<b>Attack #{idx}</b>\n"
+                f"🌐 ᴛᴀʀɢᴇᴛ: <code>{att['ip']}:{att['port']}</code>\n"
+                f"🔄 ᴇʟᴀᴘsᴇᴅ: <code>{item['elapsed']}s</code> | ⏱️ ʀᴇᴍᴀɪɴɪɴɢ: <code>{item['remaining']}s</code>\n"
+                f"⚡ ᴍᴇᴛʜᴏᴅ: <code>{att['method']}</code>"
+            )
+        message = "\n\n".join(msg_lines)
     elif attack_status["status"] == "cooldown":
         message = (
             f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> <b>ᴄᴏᴏʟᴅᴏᴡɴ</b>\n"
@@ -1884,7 +1961,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    progress_msg = await update.message.reply_text("🛑 **sᴛᴏᴘᴘɪɴɢ ᴀᴛᴛᴀᴄᴋ...**")
+    progress_msg = await update.message.reply_text("🛑 **sᴛᴏᴘᴘɪɴɢ ᴀᴛᴛᴀᴄᴋs...**")
     
     total_stopped = 0
     success_count = 0
@@ -1911,12 +1988,12 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if stopped > 0:
             success_count += 1
     
-    stop_attack()
+    stop_attack(user_id if not is_owner(user_id) else None)
     
     message = (
         f"🛑 **ᴀᴛᴛᴀᴄᴋ sᴛᴏᴘᴘᴇᴅ**\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ ᴡᴏʀᴋғʟᴏᴡs ᴄᴀɴᴄᴇʟʟᴇᴅ: {total_stopped}\n"
+        f"✅ ᴡᴏʀᴋғʟᴏws ᴄᴀɴᴄᴇʟʟᴇᴅ: {total_stopped}\n"
         f"✅ sᴇʀᴠᴇʀs: {success_count}/{len(github_tokens)}\n"
         f"⏳ ᴄᴏᴏʟᴅᴏᴡɴ: {COOLDOWN_DURATION}s"
     )
@@ -2218,6 +2295,81 @@ async def setmaxattack_command(update: Update, context: ContextTypes.DEFAULT_TYP
         MAX_ATTACKS = max_attacks
         save_max_attacks(max_attacks)
         await update.message.reply_text(f"✅ Max attacks set to `{MAX_ATTACKS}` per user.")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid number")
+
+async def block_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not is_admin(user_id):
+        await update.message.reply_text("⚠️ **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ**")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: `/block <port>`\nExample: `/block 1000`", parse_mode="HTML")
+        return
+    
+    try:
+        port_num = int(context.args[0])
+        blocked_ports.add(port_num)
+        save_blocked_ports(blocked_ports)
+        await update.message.reply_text(f"✅ Port <code>{port_num}</code> blocked successfully! All fixed.", parse_mode="HTML")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid port number.")
+
+async def unblock_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not is_admin(user_id):
+        await update.message.reply_text("⚠️ **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ**")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: `/unblock <port>`", parse_mode="HTML")
+        return
+    
+    try:
+        port_num = int(context.args[0])
+        if port_num in blocked_ports:
+            blocked_ports.remove(port_num)
+            save_blocked_ports(blocked_ports)
+            await update.message.reply_text(f"✅ Port <code>{port_num}</code> unblocked successfully!", parse_mode="HTML")
+        else:
+            await update.message.reply_text(f"⚠️ Port <code>{port_num}</code> is not in blocked list.", parse_mode="HTML")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid port number.")
+
+async def listblocks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_owner(user_id) and not is_admin(user_id):
+        await update.message.reply_text("⚠️ **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ**")
+        return
+    
+    if not blocked_ports:
+        await update.message.reply_text("🚫 No ports are currently blocked.")
+        return
+    
+    ports_str = ", ".join(f"<code>{p}</code>" for p in sorted(blocked_ports))
+    await update.message.reply_text(f"🚫 <b>Blocked Ports List:</b>\n{ports_str}", parse_mode="HTML")
+
+async def setconcurrent_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_owner(user_id):
+        await update.message.reply_text("⚠️ **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ**")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("Usage: `/setconcurrent <number>` (e.g. `/setconcurrent 5` or `/setconcurrent 6`)", parse_mode="HTML")
+        return
+    
+    try:
+        limit = int(context.args[0])
+        if limit < 1:
+            await update.message.reply_text("❌ Must be at least 1")
+            return
+        
+        global MAX_CONCURRENT_ATTACKS
+        MAX_CONCURRENT_ATTACKS = limit
+        save_max_concurrent_attacks(limit)
+        await update.message.reply_text(f"✅ Max concurrent users/attacks limit set to <code>{MAX_CONCURRENT_ATTACKS}</code>.", parse_mode="HTML")
     except ValueError:
         await update.message.reply_text("❌ Invalid number")
 
@@ -2934,6 +3086,10 @@ def main():
     application.add_handler(CommandHandler("delkey", delkey_command))
     application.add_handler(CommandHandler("setcooldown", setcooldown_command))
     application.add_handler(CommandHandler("setmaxattack", setmaxattack_command))
+    application.add_handler(CommandHandler("block", block_command))
+    application.add_handler(CommandHandler("unblock", unblock_command))
+    application.add_handler(CommandHandler("listblocks", listblocks_command))
+    application.add_handler(CommandHandler("setconcurrent", setconcurrent_command))
     
     # Admin Management Handlers
     application.add_handler(CommandHandler("add", add_command))
