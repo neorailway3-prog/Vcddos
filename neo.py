@@ -1483,7 +1483,10 @@ async def run_help_query(query, user_id):
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
     
     data = query.data
     user_id = query.from_user.id
